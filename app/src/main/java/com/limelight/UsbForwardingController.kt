@@ -339,6 +339,14 @@ class UsbForwardingController(
         }, PROMPT_DISMISS_GRACE_MS)
     }
 
+    /** Keeps the last few settled prompts so a late answer can still land. */
+    private fun rememberSettled(request: Int, device: UsbDevice) {
+        settledPrompts[request] = device
+        while (settledPrompts.size > SETTLED_PROMPT_LIMIT) {
+            settledPrompts.remove(settledPrompts.keys.first())
+        }
+    }
+
     /** Drops a device that is waiting for permission. A dialog that is already on
      * screen keeps its record until it answers: the system shows one at a time,
      * and its completion still has to be accounted for. */

@@ -48,12 +48,6 @@ class UsbForwardingController(
          *  answered prompt is never mistaken for a dismissed one. */
         private const val PROMPT_DISMISS_GRACE_MS = 400L
 
-        /** Backstop for a prompt whose dialog never hands focus back. It is
-         *  re-checked against focus, so it never settles a dialog that is still
-         *  on screen - except on a phone whose permission window takes no focus
-         *  at all, where a late answer is honoured instead. */
-        private const val PROMPT_TIMEOUT_MS = 30_000L
-
         /** Settled prompts kept so a late answer can still land. */
         private const val SETTLED_PROMPT_LIMIT = 4
 
@@ -127,7 +121,6 @@ class UsbForwardingController(
      *  we already released the device. Kept short, newest last. */
     private val settledPrompts = LinkedHashMap<Int, UsbDevice>()
     private val promptHandler = Handler(Looper.getMainLooper())
-    private var promptTimeout: Runnable? = null
     /** Whether the stream activity holds window focus, i.e. no system dialog
      *  is on top of it; the stream starts focused. */
     private var hasFocus = true
@@ -291,7 +284,6 @@ class UsbForwardingController(
                 if (Build.VERSION.SDK_INT >= 31) flags = flags or PendingIntent.FLAG_MUTABLE
                 manager.requestPermission(next.device, PendingIntent.getBroadcast(game, next.request,
                     Intent(permissionAction).setPackage(game.packageName).putExtra("request", next.request), flags))
-                schedulePromptTimeout(next.request)
             } catch (_: Exception) {
                 // No dialog was shown, so the bookkeeping closes here and the
                 // queue can carry on.
@@ -313,7 +305,6 @@ class UsbForwardingController(
             settledPrompts.remove(requestId)?.let { if (granted) request(it) }
             return
         }
-        clearPromptTimeout()
         pendingPermission = null
         // A device the user released while its dialog was up does not want that
         // dialog's late answer honoured.
@@ -346,41 +337,6 @@ class UsbForwardingController(
             LimeLog.warning("USB permission prompt $request was dismissed; treating it as not granted")
             completePermission(request, false)
         }, PROMPT_DISMISS_GRACE_MS)
-    }
-
-    /** Backstop for a prompt whose dialog never hands focus back at all. It
-     *  only settles prompts we still believe have the screen, so a dialog the
-     *  user is simply reading for longer than the timeout is left alone: the
-     *  system finishes it when they answer or dismiss it, and settling it early
-     *  would both drop their answer and open the next device's dialog on top.
-     *  While the dialog is up it re-arms instead. */
-    private fun schedulePromptTimeout(request: Int) {
-        clearPromptTimeout()
-        val timeout = Runnable {
-            promptTimeout = null
-            if (closed || pendingPermission?.request != request) return@Runnable
-            if (!hasFocus) {
-                schedulePromptTimeout(request)
-                return@Runnable
-            }
-            LimeLog.warning("USB permission prompt $request was never answered; treating it as not granted")
-            completePermission(request, false)
-        }
-        promptTimeout = timeout
-        promptHandler.postDelayed(timeout, PROMPT_TIMEOUT_MS)
-    }
-
-    /** Keeps the last few settled prompts so a late answer can still land. */
-    private fun rememberSettled(request: Int, device: UsbDevice) {
-        settledPrompts[request] = device
-        while (settledPrompts.size > SETTLED_PROMPT_LIMIT) {
-            settledPrompts.remove(settledPrompts.keys.first())
-        }
-    }
-
-    private fun clearPromptTimeout() {
-        promptTimeout?.let { promptHandler.removeCallbacks(it) }
-        promptTimeout = null
     }
 
     /** Drops a device that is waiting for permission. A dialog that is already on
@@ -576,7 +532,6 @@ class UsbForwardingController(
         // The system dialog can outlive this controller; only its bookkeeping can
         // be balanced here.
         pendingPermission?.let { pendingPermission = null; game.onUsbPermissionPromptCompleted() }
-        clearPromptTimeout()
         permissionQueue.clear()
         game.unregisterReceiver(receiver)
     }
